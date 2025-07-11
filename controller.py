@@ -1,49 +1,99 @@
-from azure.iot.device import IoTHubDeviceClient, Message
+from flask import Flask, render_template_string, request, redirect
+from azure.iot.hub import IoTHubRegistryManager
 import json
-import time
 
-# Connect to PLC
-plc = snap7.client.Client()
-plc.connect('192.168.0.1', 0, 1)
+# Azure IoT Hub connection (service credentials)
+connection_str = "HostName=advitiya-iothub.azure-devices.net;SharedAccessKeyName=iothubowner;SharedAccessKey=fV4KGKqo7EpeHtpduYnEVsgVjvf6wZqR2AIoTEOU/R4="
+device_id = "PLC"
+registry_manager = IoTHubRegistryManager(connection_str)
 
-# Azure IoT Device Connection String (correct one)
-conn_str = "HostName=arcreate.azure-devices.net;DeviceId=f2124164-ab35-4412-aeb6-970c0c1fed9b;SharedAccessKey=3hllRw5UGyqTZnpnnyRcG0JX6vjgATO2ZQrTjfWwDdY="
-client = IoTHubDeviceClient.create_from_connection_string(conn_str)
+app = Flask(__name__)
 
-while True:
-    try:
-        payload = {
-            "deviceId": "f2124164-ab35-4412-aeb6-970c0c1fed9b"
+case_keys = [f"case{i}" for i in range(1, 16)]
+case_states = {key: False for key in case_keys}
+pump_states = {"pump1": False, "pump2": False}
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PLC Control Panel</title>
+    <script>
+        function disableOtherCases(activeKey) {
+            const buttons = document.querySelectorAll('button[name="case"]');
+            buttons.forEach((btn) => {
+                if (btn.value !== activeKey) {
+                    btn.disabled = true;
+                }
+            });
         }
+        function handleCaseClick(key) {
+            const isActive = document.getElementById(key).dataset.active === 'true';
+            if (!isActive) {
+                disableOtherCases(key);
+            }
+        }
+    </script>
+</head>
+<body style="text-align: center; padding-top: 50px;">
+    <h2>Remote Control Panel: Cases 1–15</h2>
+    <form method="POST">
+        {% set any_case_on = false %}
+        {% for key in case_keys %}
+            {% if states[key] %}
+                {% set any_case_on = true %}
+            {% endif %}
+        {% endfor %}
+        {% for key in case_keys %}
+            <button 
+                id="{{key}}" 
+                name="case" 
+                value="{{key}}" 
+                data-active="{{ 'true' if states[key] else 'false' }}" 
+                onclick="handleCaseClick('{{key}}')" 
+                style="padding: 15px; margin: 5px; font-size: 16px; background-color: {{ 'green' if states[key] else 'red' }}; color: white;"
+                {% if any_case_on and not states[key] %}disabled{% endif %}>
+                {{ key|capitalize }} ({{ 'ON' if states[key] else 'OFF' }})
+            </button>
+        {% endfor %}
 
-        # Read bytes for M0 to M3
-        data_m0 = plc.mb_read(0, 1)  # M0.0 to M0.7
-        data_m1 = plc.mb_read(1, 1)  # M1.0 to M1.7
-        data_m2 = plc.mb_read(2, 1)  # M2.0 to M2.7
-        data_m3 = plc.mb_read(3, 1)  # M3.0 to M3.7
+        <br><br>
+        <h2>Pumps</h2>
+        <button name="pump" value="pump1" style="padding: 15px; margin: 5px; font-size: 16px; background-color: {{ 'green' if pump_states['pump1'] else 'red' }}; color: white;">
+            Pump 1 ({{ 'ON' if pump_states['pump1'] else 'OFF' }})
+        </button>
+        <button name="pump" value="pump2" style="padding: 15px; margin: 5px; font-size: 16px; background-color: {{ 'green' if pump_states['pump2'] else 'red' }}; color: white;">
+            Pump 2 ({{ 'ON' if pump_states['pump2'] else 'OFF' }})
+        </button>
+    </form>
+</body>
+</html>
+"""
 
-        # case1 to case7 → M0.0 to M0.6
-        for i in range(7):
-            payload[f"case{i+1}"] = snap7.util.get_bool(data_m0, 0, i)
+@app.route('/', methods=['GET', 'POST'])
+def control():
+    if request.method == 'POST':
+        case_clicked = request.form.get('case')
+        pump_clicked = request.form.get('pump')
 
-        # case8 to case14 → M1.0 to M1.6
-        for i in range(7):
-            payload[f"case{i+8}"] = snap7.util.get_bool(data_m1, 0, i)
+        if case_clicked:
+            # Toggle selected case, turn others off
+            was_on = case_states[case_clicked]
+            for key in case_states:
+                case_states[key] = False
+            case_states[case_clicked] = not was_on
+            payload = {case_clicked: case_states[case_clicked]}
 
-        # case15 → M2.0
-        payload["case15"] = snap7.util.get_bool(data_m2, 0, 0)
+        elif pump_clicked:
+            pump_states[pump_clicked] = not pump_states[pump_clicked]
+            payload = {pump_clicked: pump_states[pump_clicked]}
 
-        # pump1 → M3.0
-        payload["pump1"] = snap7.util.get_bool(data_m3, 0, 0)
+        message = json.dumps(payload)
+        registry_manager.send_c2d_message(device_id, message)
+        print(f"Sent: {payload}")
+        return redirect('/')
 
-        # pump2 → M3.1
-        payload["pump2"] = snap7.util.get_bool(data_m3, 0, 1)
+    return render_template_string(HTML, case_keys=case_keys, states=case_states, pump_states=pump_states)
 
-        msg = Message(json.dumps(payload))
-        client.send_message(msg)
-        print(f"Sent to Azure IoT Hub: {payload}")
-
-    except Exception as e:
-        print(f"Error: {e}")
-
-    time.sleep(5)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
