@@ -1,4 +1,3 @@
-import snap7
 from azure.iot.device import IoTHubDeviceClient, Message
 import json
 import time
