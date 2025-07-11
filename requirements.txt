@@ -1,3 +1,4 @@
 flask
 azure-iot-device
 azure.iot.hub
+snap7
